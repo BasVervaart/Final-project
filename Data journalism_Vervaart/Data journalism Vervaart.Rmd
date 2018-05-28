@@ -1,0 +1,186 @@
+---
+title: "Data journalism: Hertie in the media"
+author: "Bas Vervaart"
+date: "14 May 2018"
+e-mail: "b.vervaart@mpp.hertie-school.org"
+wordcount: 1209
+output: html_document
+---
+```{r setup, include=TRUE,warning=F}
+library(xml2)
+library(tidyverse)
+library(stringr)
+#library(RSelenium) package has recently been inactivated
+library(rvest)
+library(tidytext)
+library(tidyr)
+library(stringi)
+knitr::opts_chunk$set(echo = TRUE)
+```
+The faculty at the Hertie School of Governance regularly provide their voice and opinion in the media on legal, political and economic matters. Since 2010 the school started to publish it's media 'publications' on its own website and provide links to the articles' original sources. I decided to scrape these headlines and articles to see who publishes most regularly and what Hertie professors publish about. In addition, scraping the Hertie website can provide us some descriptive insights on the international character of the school and the sentiment of publications. Due to resource constraints this scraping effort only focuses on headlines on the Hertie media page and the accompanying text. The actual articles published in a plurality of media outlets have not been scraped.
+
+## Getting the data
+The Hertie media page provides a snapshot of the twelve last published articles and has the option to load more articles at the bottom of the page. By clicking on an article, Hertie links you to a unique page on their website in which they provide additional information such as a link to the original article page and a column mentioning the author. To get the whole page with all the articles, we can set up a selenium driver and build a loop that keeps on clicking the load more button to keep generating articles. The max has been set to 50 , because there is only a limited number of articles. I extract the page source and save it into a separate file and load it in the R console. 
+```{r,eval=F,echo=T}
+rD <- rsDriver()
+remDr <- rD[["client"]]
+url_hertie<-'https://www.hertie-school.org/en/debate/in-the-media/'
+remDr$navigate(url)
+css <- '.button--load-more'
+loadmore <- remDr$findElement(using = "css selector", value = css)
+click<- loadmore$clickElement() #click on button
+
+i <- 1
+while (i < 50) {
+  Sys.sleep(3)
+  loadmore$clickElement()
+  i = i+1
+}
+page_source<-remDr$getPageSource()
+write(page_source[[1]], file = "hertie_full.html")
+```
+Given that I just extracted the full page source, I can now load in the data and specify a css path (or xpath) to extract all the headlines. The headlines are still a bit messy and some further cleaning of the string with regular expressions gives us a nice and clean string of 343 headlines (as of writing).
+```{r, echo=T}
+#Headlines
+hertie <- read_html("hertie_full.html")
+headlines<- html_nodes(hertie,css=".grid-item-title") %>% html_text()
+#Headlines Cleaned
+headlines<-str_replace_all(headlines,"\\u0092|\\u0091","'") %>% 
+  str_replace_all(.,"\\u0093|\\u0094|\\u0096|\\u0097",'"') %>% 
+  gsub('\"', "",., fixed = TRUE)
+```
+I would also like to extract all the authors from the different articles, which can be find on the unique Hertie page of the article. I therefore build up a list of url links that link to every single article. The list of urls can be identified by having the string /en/debate/in-the-media/detail/content/ in the path. I therefore filter the list of links based on this path and then extract all information if this path is identified. I then paste the base url in front of it. The first two links still need some additional cleaning.
+
+Now that I have the list of links I can extract the author information. The author information is on the same position of every page, so I need to build a function that extracts this information and loop it over to the entire list of URLs. The corresponding string needs some additional cleaning but can then be put into a dataframe with columns for the author and the corresponding position. Similarly, I extract all text from the different pages with a unique function and xpath looped over all the URLs and put this information into a dataframe with a column for the author and position.
+
+```{r, echo=T}
+#Links to all articles
+links<- html_nodes(hertie,xpath="//a") %>% html_attr("href") %>%  as.list()
+islink <- str_detect(links, "/en/debate/in-the-media/detail/content/")
+regexp <- ".*"
+article_list <- lapply(links[islink], str_extract, regexp)
+base_url <- 'https://www.hertie-school.org'
+url_list <- paste0(base_url,article_list)
+
+#The first two links still need to be cleaned
+two_rows <- url_list[1:2] %>% str_replace('https://www.hertie-school.org',"")
+url_list <- url_list[3:340]
+url_list <- append(two_rows, url_list) %>% as.list()
+
+#List of authors
+author_list <- character()
+author_list <- lapply(url_list, function(i){
+  webpage <- read_html(i)
+  nodes <- html_nodes(webpage, xpath='//*[contains(concat( " ", @class, " " ), concat( " ", "style-small", " " ))]//*[contains(concat( " ", @class, " " ), concat( " ", "text-cell", " " ))]') 
+  author_text <- html_text(nodes) 
+  })
+
+#Cleaning author_list
+author_list<- author_list[lengths(author_list) > 0L]
+author_list_two <- author_list %>% str_replace_all("[\t\n]" , "") %>% str_trim() %>% 
+  str_split(",(?=[^,]+$)")
+author_list_df <- do.call(rbind,author_list_two)
+colnames(author_list_df) <- c("Name","Position")
+author_list_df <- as.data.frame(author_list_df)
+author_list_df$Name<- as.character(author_list_df$Name) 
+author_list_df$Position<- as.character(author_list_df$Position)
+author_list_df[11,c(1,2)] <- c("Johanna Mair", "Professor for Organization, Strategy and Leadership")
+```
+
+```{r, echo=T}
+#Text on Hertie page, turns out text also includes the author, so we can just put them together in one dataframe
+text <- character()
+text <- lapply(url_list, function(i){
+  webpage <- read_html(i)
+  nodes <- html_nodes(webpage, xpath='//*[contains(concat( " ", @class, " " ), concat( " ", "large-text", " " ))]//p | //*[contains(concat( " ", @class, " " ), concat( " ", "style-small", " " ))]//*[contains(concat( " ", @class, " " ), concat( " ", "text-cell", " " ))]')
+  text_text <- html_text(nodes) 
+  })
+text_clean <- lapply(text, function(x) {str_replace_all(x, "[\t\n]" , "")})
+text_df<- as.data.frame(t(stri_list2matrix(text_clean)))
+columns<-str_split_fixed(text_df$V2, ",", 2)
+text_df<-cbind(text_df,columns)
+text_df[,2] <- NULL
+colnames(text_df)<- c("Content","Author","Position")
+```
+
+#Analysis
+Now that we have the data we can analyze it and provide some interesting descriptive statistics. Let's first look at the list of authors. Who are the three top publishers in the media? I define a function to count this and apply it to the dataframe with the author list. 
+```{r, echo=T}
+freqfunc <- function(x, n){
+  head(sort(table(unlist(strsplit(as.character(x), ", "))),decreasing=T),n)
+}
+
+freqfunc(author_list_df$Name,3) #Three most common published authors
+```
+It seems like Prof. Dr. Andrea Römmele is providing her voice most regularly in the media. However, a closer look at the author dataframe shows us that only 54 of the publications had an identified author. When having a closer look at the actual website it turns out that Hertie only provided the author information in a separate column in the 54 most recent publications. My information is therefore incomplete. Fortunately, there is a way around this because the text in the article always mentions the author. I could therefore define a vector with all the professors at Hertie (and dr. Munzert) and look for a matching pattern in the content of the actual article page (that is the article page on the Hertie website). I can then just sum these identifications and make a ranking. 
+```{r, echo=T}
+authors<- c("Anheier","Bernoth","Çali","Cingolani","Dawson","Enderlein","Flachsland","Graf",
+            "Hallerberg","Hammerschmid","Hassel","Hirth","Hurrelmann","Ischinger","Jachtenfuchs",
+            "Joerges","Kayser","Kemfert","Kreyenfeld","Mair","Mungiu-Pippidi","Pisani-Ferry","Römmele",
+            "Schwander","Stockmann","Traxler","Wegrich","Wucherpfennig","Munzert")
+publications<-map_df(authors, ~ str_count(text_df$Content, .x) %>% 
+         sum %>%
+         set_names(.x) %>% 
+         enframe(name = "Author", value = "count")) 
+publications<-publications[order(publications$count,decreasing=T),]
+head(publications)
+```
+This shows us that although Prof. Dr. Römmele is still amongst the most avid publishers, Prof. Dr. Enderlein actually has the most media publications. We can also display this graphically using ggplot. 
+```{r, echo=T}
+ggplot(data=publications,mapping=aes(x=reorder(Author,count),y=count,fill=Author)) + 
+  geom_bar(stat='identity') +
+  coord_flip() +
+  labs(x="Professor",y="Count") +
+  ggtitle("Number of publications by Professor") +
+  theme_bw()
+```
+
+Another interesting point of debate is whether Hertie is actually as international as it claims to be. Some students experience that the school still has a distinct focus on Germany and German students make up almost half of the student body. All articles that are published in German are being assigned as such with the parenthesized phrase 'in German'. I can therefore run a similar line of code to detect the number of German articles. It turns out that there are 167 articles published in German, which implies that the other 173 articles are published in English (assuming there are no other languages published in, alternatively this could be defined as 'Other Languages'). 
+```{r, echo=T,warning=F}
+ingerman <- "in German"
+map_df(ingerman, ~ str_count(text_df$Content, .x) %>% 
+                                sum %>%
+                                set_names(.x) %>% 
+                                enframe(value = "count"))
+```
+In other words, around half of the articles that Hertie professors (and dr. Munzert) write in the media are in English and the other half are in German. As graphically displayed below. This seems to reflect the student body reasonably well.
+```{r, echo=T}
+Language <- c("German","English")
+Count <- c(167,173)
+article_languages <- as.data.frame(cbind(Language,Count))
+article_languages$Count <-  as.numeric(as.character(article_languages$Count))
+article_languages<- article_languages %>% mutate(percentage = Count/sum(Count))
+ggplot(data=article_languages,mapping=aes(x=Language, y=percentage,fill=Language)) + 
+  geom_bar(stat='identity') +
+  labs(x="Language",y="Count") +
+  ggtitle("Percentage of articles in English vs German") + 
+  theme_bw()
+```
+
+I am also curious about on which topics Hertie faculty and staff write when they appear in the media. Or alternatively, what is the message they want to convey? For this I can analyze the headlines that I scraped. The headlines are an interesting source of data because it is supposed to catch the reader's attention to the actual article and should thus convey the core message/topic that the author wants to inform the reader about. For text analysis I can use the tidytext package and load in a dataframe of stop words to avoid getting a list of 'the', 'in' and 'to' as most common words. The results of most commonly used words in Hertie publication headlines are interesting: 
+```{r, echo=T}
+data(stop_words)
+(headlines_count <- data_frame(line = 1:343, text = headlines) %>% unnest_tokens(word,text) %>% anti_join(stop_words) %>% count(word,sort=T))
+```
+It turns out that the conception of some students that Hertie is a German and European centered policy school is to some extent confirmed in the data. It seems that Hertie professors are mostly publishing articles that are about Germany and Europe. The six most used words all concern these two topics.
+
+Lastly, I have a look at the sentiment of the headlines of the Hertie website (over time). For this I use the 'Bing' sentiment package which comes with the tidytext package. The index runs over all the extracted headlines, where index number 1 is the latest publication. From the plot it seems that Hertie's publications in the media are roughly equally split between negative and positive headlines. However, one has to note that many headlines (roughly a third) donot contain any sentiment words. As for the most used sentimental words the word 'crisis' is mentioned most frequently. It also seems that the Hertie faculty publishes regularly in the media on topics that concern Trump. Interestingly the sentiment analysis defines Trump as a positive sentiment. This classification will clearly receive scrutiny from a part of the voters, policymakers and commentators out there. Other words that commonly appear in the headlines are to be expected from a policy school and include words such as 'freedom' and 'corrupt'. The word 'right' could refer to political orientation as well as the legal definition of a right, with both fitting into the policy domain. 
+```{r, echo=T}
+headlines_analysis <- data_frame(line = 1:343, text = headlines) %>% unnest_tokens(word, text)
+hertie_sentiment <- headlines_analysis %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, index = line, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+
+hertie_sentiment %>%  
+  ggplot(aes(index, sentiment, fill = sentiment)) +
+  geom_bar(alpha = 0.5, stat = "identity", show.legend = FALSE) +
+  ggtitle("Sentiment analysis of Hertie headlines")+
+  theme_bw()
+
+(word_count <- headlines_analysis %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup())
+```

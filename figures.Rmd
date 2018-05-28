@@ -1,0 +1,46 @@
+---
+title: "Figures"
+author: "Bas Vervaart"
+date: "14 May 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+article_languages <- read.csv("hertie_article_languages.csv")
+hertie_sentiment <- read.csv("hertie_sentiment.csv")
+publications <- read.csv("hertie_publications.csv")
+```
+
+## Figures
+
+Below one finds the code and figures of the different plots. 
+
+Number of publications by Professor:
+```{r}
+ggplot(data=publications,mapping=aes(x=reorder(Author,count),y=count,fill=Author)) + 
+  geom_bar(stat='identity') +
+  coord_flip() +
+  labs(x="Professor",y="Count") +
+  ggtitle("Number of publications by Professor") +
+  theme_bw()
+```
+
+Article languages:
+```{r}
+ggplot(data=article_languages,mapping=aes(x=Language, y=percentage,fill=Language)) + 
+  geom_bar(stat='identity') +
+  labs(x="Language",y="Count") +
+  ggtitle("Percentage of articles in English vs German") + 
+  theme_bw()
+```
+
+Sentiment analysis:
+```{r}
+ggplot(data=hertie_sentiment,mapping= aes(index, sentiment, fill = sentiment)) +
+  geom_bar(alpha = 0.5, stat = "identity", show.legend = FALSE) +
+  ggtitle("Sentiment analysis of Hertie headlines") +
+  theme_bw()
+```
